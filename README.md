@@ -48,14 +48,15 @@ AWS_SECRET_ACCESS_KEY=supersecret
 
 ### 3. Download Required JARs
 
-```text
+
 In jars/ folder place the following inside:
 
 | File                                       | Source                                                                                                                                 |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `iceberg-spark-runtime-3.5_2.12-1.6.0.jar` | [Maven Central – Iceberg Spark Runtime 1.6.0](https://repo1.maven.org/maven2/org/apache/iceberg/iceberg-spark-runtime-3.5_2.12/1.6.0/) |
 | `aws-java-sdk-bundle-1.12.261.jar`         | [Maven Central – AWS SDK Bundle](https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/1.12.261/)                               |
-```
+
+
 ### 4. Start the Stack
 
 ```bash
