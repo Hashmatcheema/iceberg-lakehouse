@@ -1,0 +1,136 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    environment:
+      - MINIO_ROOT_USER=minio
+      - MINIO_ROOT_PASSWORD=supersecret
+      - MINIO_REGION_NAME=us-east-1
+    ports:
+      - "9100:9000"   # S3 API
+      - "9101:9001"   # MinIO Console
+    volumes:
+      - ./minio:/data
+    entrypoint: >
+      /bin/sh -c "
+      minio server /data --console-address ':9001' &
+      sleep 5;
+      mc alias set local http://localhost:9000 minio supersecret;
+      mc mb local/warehouse --ignore-existing;
+      tail -f /dev/null"
+    networks:
+      - lake_net
+
+  postgres:
+    image: postgres:17
+    container_name: nessie-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=catalog
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --data-checksums
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lake_net
+
+  nessie:
+    image: ghcr.io/projectnessie/nessie:0.104.2
+    container_name: nessie
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "19120:19120"  # Nessie API
+    environment:
+      - nessie.server.authentication.enabled=false
+      - nessie.version.store.type=JDBC2
+      - nessie.version.store.persist.jdbc.datasource=postgresql
+      - quarkus.datasource.postgresql.jdbc.url=jdbc:postgresql://nessie-postgres:5432/catalog
+      - quarkus.datasource.postgresql.username=postgres
+      - quarkus.datasource.postgresql.password=postgres
+      # Configure MinIO as S3 (Iceberg) for Nessie
+      - nessie.catalog.service.s3.default-options.external-endpoint=http://127.0.0.1:9100/
+      - nessie.catalog.service.s3.default-options.endpoint=http://minio:9000/
+      - nessie.catalog.default-warehouse=warehouse
+      - nessie.catalog.warehouses.warehouse.location=s3://warehouse/
+      - nessie.catalog.service.s3.default-options.region=us-east-1
+      - nessie.catalog.service.s3.default-options.path-style-access=true
+      - nessie.catalog.service.s3.default-options.access-key=urn:nessie-secret:quarkus:nessie.catalog.secrets.access-key
+      - nessie.catalog.secrets.access-key.name=minio
+      - nessie.catalog.secrets.access-key.secret=supersecret
+    networks:
+      - lake_net
+
+  trino:
+    image: trinodb/trino:latest
+    container_name: trino
+    depends_on:
+      - minio
+      - nessie
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./trino/etc/catalog:/etc/trino/catalog
+    networks:
+      - lake_net
+
+  spark-master:
+    image: apache/spark:3.5.6-java17-python3
+    container_name: spark-master
+    hostname: spark-master
+    environment:
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=supersecret
+      - AWS_REGION=us-east-1
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+      - SPARK_SUBMIT_OPTS="-Dspark.sql.catalog.nessie=org.apache.iceberg.spark.SparkCatalog -Dspark.sql.catalog.nessie.uri=http://nessie:19120/api/v2 -Dspark.sql.catalog.nessie.ref=main -Dspark.sql.catalog.nessie.io-impl=org.apache.iceberg.aws.s3.S3FileIO -Dspark.sql.catalog.nessie.s3.endpoint=http://minio:9000 -Dspark.sql.catalog.nessie.s3.access-key=minio -Dspark.sql.catalog.nessie.s3.secret-key=supersecret -Dspark.sql.catalog.nessie.s3.path-style-access=true -Dspark.sql.catalog.nessie.warehouse=s3://warehouse/"
+    ports:
+      - "7077:7077"  # Spark master port
+      - "8085:8080" # Spark master Web UI
+    command: >
+      bash -c "
+      /opt/spark/sbin/start-master.sh -h spark-master -p 7077 &
+      while ! nc -z localhost 7077; do sleep 1; done;
+      wait"
+    volumes:
+      - ./spark_events:/tmp/spark-events
+      - ./data:/data
+      - .jars/aws-java-sdk-bundle-1.12.261.jar:/opt/spark/jars/aws-java-sdk-bundle-1.12.261.jar    
+    networks:
+      - lake_net
+
+  spark-worker:
+    image: apache/spark:3.5.6-java17-python3
+    container_name: spark-worker
+    depends_on:
+      - spark-master
+    environment:
+      - AWS_ACCESS_KEY_ID=minio
+      - AWS_SECRET_ACCESS_KEY=supersecret
+      - AWS_REGION=us-east-1
+    command: >
+      bash -c "
+      /opt/spark/sbin/start-worker.sh spark://spark-master:7077 &
+      while ! nc -z spark-master 7077; do sleep 1; done;
+      wait"
+    networks:
+      - lake_net
+
+networks:
+  lake_net:
+    driver: bridge
+
+env_file:
+  - .env

@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+
+# Spark logs/events
+spark_events/
+
+# IDE files
+.vscode/
+*.code-workspace
+
+# OS / User files
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+
+# Data files
+data/incoming/
+data/rejected/
+data/reports/
+postgres_data/
+minio/.minio.sys/
+
+# Optional
+*/jars/.jar
